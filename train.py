@@ -24,6 +24,28 @@ from brax.io import html
 from evaluator import CrlEvaluator
 from buffer import TrajectoryUniformSamplingQueue
 
+def warmup_jax():
+    """Warm up JAX and CUDA to prevent timing issues."""
+    print("Warming up JAX/CUDA...", flush=True)
+    
+    try:
+        # Simple operations to initialize CUDA context
+        # Use very small arrays to avoid triggering unsupported operations
+        x = np.ones((100, 100), dtype=np.float32)
+        x_jax = jax.numpy.asarray(x)
+        
+        # Simple arithmetic operations
+        for _ in range(5):
+            x_jax = x_jax + 1.0
+        
+        # Force synchronization
+        result = jax.numpy.sum(x_jax).block_until_ready()
+        print(f"JAX/CUDA warmup complete (result: {result}).", flush=True)
+    except Exception as e:
+        print(f"Warning: JAX warmup failed ({str(e)}), continuing anyway...", flush=True)
+
+jax.tree_map = jax.tree_util.tree_map
+
 @dataclass
 class Args:
     exp_name: str = "train"
@@ -31,9 +53,9 @@ class Args:
     torch_deterministic: bool = True
     cuda: bool = True
     track: bool = True
-    wandb_project_name: str = "clean_JaxGCRL_test"
-    wandb_entity: str = 'wang-kevin3290-princeton-university'
-    wandb_mode: str = 'offline'
+    wandb_project_name: str = "rl_with_lejepa"
+    wandb_entity: str = 'k00627350-johannes-kepler-universit-t-linz'
+    wandb_mode: str = 'online'
     wandb_dir: str = '.'
     wandb_group: str = '.'
     capture_vis: bool = True
@@ -60,6 +82,9 @@ class Args:
     batch_size: int = 256
     gamma: float = 0.99
     logsumexp_penalty_coeff: float = 0.1
+    use_sigreg: int = 0
+    sigreg_coeff: float = 1.0
+    sigreg_num_slices: int = 256
 
     max_replay_size: int = 10000
     min_replay_size: int = 1000
@@ -261,9 +286,219 @@ def save_params(path: str, params: Any):
     with epath.Path(path).open('wb') as fout:
         fout.write(pickle.dumps(params))
 
+def make_env(env_id, args):
+    print(f"making env with env_id: {env_id}", flush=True)
+    if env_id == "reacher":
+        from envs.reacher import Reacher
+        env = Reacher(
+            backend="spring",
+        )
+        args.obs_dim = 10
+        args.goal_start_idx = 4
+        args.goal_end_idx = 7
+    elif env_id == "pusher":
+        from envs.pusher import Pusher
+        env = Pusher(
+            backend="spring",
+        )
+        args.obs_dim = 20
+        args.goal_start_idx = 10
+        args.goal_end_idx = 13
+    elif env_id == "ant":
+        from envs.ant import Ant
+        env = Ant(
+            backend="spring",
+            exclude_current_positions_from_observation=False,
+            terminate_when_unhealthy=True,
+        )
+
+        args.obs_dim = 29
+        args.goal_start_idx = 0
+        args.goal_end_idx = 2
+
+    elif "ant" in env_id and "maze" in env_id: #needed the add the ant check to differentiate with humanoid maze
+        if "gen" not in env_id:
+            from envs.ant_maze import AntMaze
+            env = AntMaze(
+                backend="spring",
+                exclude_current_positions_from_observation=False,
+                terminate_when_unhealthy=True,
+                maze_layout_name=env_id[4:]
+            )
+
+            args.obs_dim = 29
+            args.goal_start_idx = 0
+            args.goal_end_idx = 2
+        else:
+            from envs.ant_maze_generalization import AntMazeGeneralization
+            gen_idx = env_id.find("gen")
+            maze_layout_name = env_id[4:gen_idx-1]
+            generalization_config = env_id[gen_idx+4:]
+            print(f"maze_layout_name: {maze_layout_name}, generalization_config: {generalization_config}", flush=True)
+            env = AntMazeGeneralization(
+                backend="spring",
+                exclude_current_positions_from_observation=False,
+                terminate_when_unhealthy=True,
+                maze_layout_name=maze_layout_name,
+                generalization_config=generalization_config
+            )
+
+            args.obs_dim = 29
+            args.goal_start_idx = 0
+            args.goal_end_idx = 2
+    
+    elif env_id == "ant_ball":
+        from envs.ant_ball import AntBall
+        env = AntBall(
+            backend="spring",
+            exclude_current_positions_from_observation=False,
+            terminate_when_unhealthy=True,
+        )
+
+        args.obs_dim = 31
+        args.goal_start_idx = 28
+        args.goal_end_idx = 30
+
+    elif env_id == "ant_push":
+        from envs.ant_push import AntPush
+        env = AntPush(
+            backend="mjx",
+        )
+
+        args.obs_dim = 31
+        args.goal_start_idx = 0
+        args.goal_end_idx = 2
+        
+    elif env_id == "humanoid":
+        from envs.humanoid import Humanoid
+        env = Humanoid(
+            backend="generalized",
+            exclude_current_positions_from_observation=False,
+            terminate_when_unhealthy=True,
+        )
+
+        args.obs_dim = 268
+        args.goal_start_idx = 0
+        args.goal_end_idx = 3
+        
+    elif "humanoid" in env_id and "maze" in env_id:
+        from envs.humanoid_maze import HumanoidMaze
+        env = HumanoidMaze(
+            backend="spring",
+            maze_layout_name=env_id[9:]
+        )
+
+        args.obs_dim = 268
+        args.goal_start_idx = 0
+        args.goal_end_idx = 3
+
+        
+    elif env_id == "arm_reach":
+        from envs.manipulation.arm_reach import ArmReach
+        env = ArmReach(
+            backend="mjx",
+        )
+
+        args.obs_dim = 13
+        args.goal_start_idx = 7
+        args.goal_end_idx = 10
+        
+    elif env_id == "arm_binpick_easy":
+        from envs.manipulation.arm_binpick_easy import ArmBinpickEasy
+        env = ArmBinpickEasy(
+            backend="mjx",
+        )
+
+        args.obs_dim = 17
+        args.goal_start_idx = 0
+        args.goal_end_idx = 3
+        
+    elif env_id == "arm_binpick_hard":
+        from envs.manipulation.arm_binpick_hard import ArmBinpickHard
+        env = ArmBinpickHard(
+            backend="mjx",
+        )
+
+        args.obs_dim = 17
+        args.goal_start_idx = 0
+        args.goal_end_idx = 3
+        
+    elif env_id == "arm_binpick_easy_EEF":
+        from envs.manipulation.arm_binpick_easy_EEF import ArmBinpickEasyEEF
+        env = ArmBinpickEasyEEF(
+            backend="mjx",
+        )
+
+        args.obs_dim = 11
+        args.goal_start_idx = 0
+        args.goal_end_idx = 3
+    
+    elif "arm_grasp" in env_id: # either arm_grasp or arm_grasp_0.5, etc
+        from envs.manipulation.arm_grasp import ArmGrasp
+        cube_noise_scale = float(env_id[10:]) if len(env_id) > 9 else 0.3
+        env = ArmGrasp(
+            cube_noise_scale=cube_noise_scale,
+            backend="mjx",
+        )
+
+        args.obs_dim = 23
+        args.goal_start_idx = 16
+        args.goal_end_idx = 23
+    
+    elif env_id == "arm_push_easy":
+        from envs.manipulation.arm_push_easy import ArmPushEasy
+        env = ArmPushEasy(
+            backend="mjx",
+        )
+
+        args.obs_dim = 17
+        args.goal_start_idx = 0
+        args.goal_end_idx = 3
+    
+    elif env_id == "arm_push_hard":
+        from envs.manipulation.arm_push_hard import ArmPushHard
+        env = ArmPushHard(
+            backend="mjx",
+        )
+
+        args.obs_dim = 17
+        args.goal_start_idx = 0
+        args.goal_end_idx = 3
+
+    else:
+        raise NotImplementedError
+    
+    return env
+
+def SIGReg(x, key, num_slices=256):
+    # s l i c e sampling
+    proj_shape = (x.shape[1], num_slices)
+    A = jax.random.normal(key, shape=proj_shape)
+    A /= jnp.linalg.norm(A, ord=2, axis=0)
+
+    # i n t e g r a t i o n point s
+    t = jnp.linspace(-5, 5, 17)
+
+    # t h e o r e t i c a l CF f o r N(0, 1) and Gauss. window
+    exp_f = jnp.exp(-0.5 * t**2)
+
+    # emp i r i c a l CF
+    x_t = (x @ A).T[:, :, None] * t  # (M, N, T)
+    ecf = jnp.exp(1j * x_t).mean(1)
+
+    # weighted L2 distance
+    err = jnp.abs(ecf - exp_f)**2 * exp_f
+    
+    # numerical integration (trapezoidal rule)
+    loss = jnp.sum((err[:, 1:] + err[:, :-1]) / 2 * (t[1:] - t[:-1]), axis=-1).mean()
+    return loss
+    
 if __name__ == "__main__":
 
     args = tyro.cli(Args)
+    
+    # Warm up JAX/CUDA to prevent timing issues
+    warmup_jax()
     
     # Print every arg
     print("Arguments:", flush=True)
@@ -318,192 +553,8 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
     key = jax.random.PRNGKey(args.seed)
     key, buffer_key, env_key, eval_env_key, actor_key, sa_key, g_key = jax.random.split(key, 7)
-
-    def make_env(env_id=args.env_id):
-        print(f"making env with env_id: {env_id}", flush=True)
-        if env_id == "reacher":
-            from envs.reacher import Reacher
-            env = Reacher(
-                backend="spring",
-            )
-            args.obs_dim = 10
-            args.goal_start_idx = 4
-            args.goal_end_idx = 7
-        elif env_id == "pusher":
-            from envs.pusher import Pusher
-            env = Pusher(
-                backend="spring",
-            )
-            args.obs_dim = 20
-            args.goal_start_idx = 10
-            args.goal_end_idx = 13
-        elif env_id == "ant":
-            from envs.ant import Ant
-            env = Ant(
-                backend="spring",
-                exclude_current_positions_from_observation=False,
-                terminate_when_unhealthy=True,
-            )
-
-            args.obs_dim = 29
-            args.goal_start_idx = 0
-            args.goal_end_idx = 2
-
-        elif "ant" in env_id and "maze" in env_id: #needed the add the ant check to differentiate with humanoid maze
-            if "gen" not in env_id:
-                from envs.ant_maze import AntMaze
-                env = AntMaze(
-                    backend="spring",
-                    exclude_current_positions_from_observation=False,
-                    terminate_when_unhealthy=True,
-                    maze_layout_name=env_id[4:]
-                )
-
-                args.obs_dim = 29
-                args.goal_start_idx = 0
-                args.goal_end_idx = 2
-            else:
-                from envs.ant_maze_generalization import AntMazeGeneralization
-                gen_idx = env_id.find("gen")
-                maze_layout_name = env_id[4:gen_idx-1]
-                generalization_config = env_id[gen_idx+4:]
-                print(f"maze_layout_name: {maze_layout_name}, generalization_config: {generalization_config}", flush=True)
-                env = AntMazeGeneralization(
-                    backend="spring",
-                    exclude_current_positions_from_observation=False,
-                    terminate_when_unhealthy=True,
-                    maze_layout_name=maze_layout_name,
-                    generalization_config=generalization_config
-                )
-
-                args.obs_dim = 29
-                args.goal_start_idx = 0
-                args.goal_end_idx = 2
         
-        elif env_id == "ant_ball":
-            from envs.ant_ball import AntBall
-            env = AntBall(
-                backend="spring",
-                exclude_current_positions_from_observation=False,
-                terminate_when_unhealthy=True,
-            )
-
-            args.obs_dim = 31
-            args.goal_start_idx = 28
-            args.goal_end_idx = 30
-
-        elif env_id == "ant_push":
-            from envs.ant_push import AntPush
-            env = AntPush(
-                backend="mjx",
-            )
-
-            args.obs_dim = 31
-            args.goal_start_idx = 0
-            args.goal_end_idx = 2
-            
-        elif env_id == "humanoid":
-            from envs.humanoid import Humanoid
-            env = Humanoid(
-                backend="spring",
-                exclude_current_positions_from_observation=False,
-                terminate_when_unhealthy=True,
-            )
-
-            args.obs_dim = 268
-            args.goal_start_idx = 0
-            args.goal_end_idx = 3
-            
-        elif "humanoid" in env_id and "maze" in env_id:
-            from envs.humanoid_maze import HumanoidMaze
-            env = HumanoidMaze(
-                backend="spring",
-                maze_layout_name=env_id[9:]
-            )
-
-            args.obs_dim = 268
-            args.goal_start_idx = 0
-            args.goal_end_idx = 3
-
-            
-        elif env_id == "arm_reach":
-            from envs.manipulation.arm_reach import ArmReach
-            env = ArmReach(
-                backend="mjx",
-            )
-
-            args.obs_dim = 13
-            args.goal_start_idx = 7
-            args.goal_end_idx = 10
-            
-        elif env_id == "arm_binpick_easy":
-            from envs.manipulation.arm_binpick_easy import ArmBinpickEasy
-            env = ArmBinpickEasy(
-                backend="mjx",
-            )
-
-            args.obs_dim = 17
-            args.goal_start_idx = 0
-            args.goal_end_idx = 3
-            
-        elif env_id == "arm_binpick_hard":
-            from envs.manipulation.arm_binpick_hard import ArmBinpickHard
-            env = ArmBinpickHard(
-                backend="mjx",
-            )
-
-            args.obs_dim = 17
-            args.goal_start_idx = 0
-            args.goal_end_idx = 3
-            
-        elif env_id == "arm_binpick_easy_EEF":
-            from envs.manipulation.arm_binpick_easy_EEF import ArmBinpickEasyEEF
-            env = ArmBinpickEasyEEF(
-                backend="mjx",
-            )
-
-            args.obs_dim = 11
-            args.goal_start_idx = 0
-            args.goal_end_idx = 3
-        
-        elif "arm_grasp" in env_id: # either arm_grasp or arm_grasp_0.5, etc
-            from envs.manipulation.arm_grasp import ArmGrasp
-            cube_noise_scale = float(env_id[10:]) if len(env_id) > 9 else 0.3
-            env = ArmGrasp(
-                cube_noise_scale=cube_noise_scale,
-                backend="mjx",
-            )
-
-            args.obs_dim = 23
-            args.goal_start_idx = 16
-            args.goal_end_idx = 23
-        
-        elif env_id == "arm_push_easy":
-            from envs.manipulation.arm_push_easy import ArmPushEasy
-            env = ArmPushEasy(
-                backend="mjx",
-            )
-
-            args.obs_dim = 17
-            args.goal_start_idx = 0
-            args.goal_end_idx = 3
-        
-        elif env_id == "arm_push_hard":
-            from envs.manipulation.arm_push_hard import ArmPushHard
-            env = ArmPushHard(
-                backend="mjx",
-            )
-
-            args.obs_dim = 17
-            args.goal_start_idx = 0
-            args.goal_end_idx = 3
-
-        else:
-            raise NotImplementedError
-        
-        return env
-        
-    env = make_env()
+    env = make_env(args.env_id, args)
     env = envs.training.wrap(
         env,
         episode_length=args.episode_length,
@@ -522,7 +573,7 @@ if __name__ == "__main__":
         args.eval_env_id = args.env_id
         
     # make eval env
-    eval_env = make_env(args.eval_env_id)
+    eval_env = make_env(args.eval_env_id, args)
     eval_env = envs.training.wrap(
         eval_env,
         episode_length=args.episode_length,
@@ -786,6 +837,29 @@ if __name__ == "__main__":
 
         return training_state, metrics
 
+    def SIGReg(x, key, num_slices=256):
+        # s l i c e sampling
+        proj_shape = (x.shape[1], num_slices)
+        A = jax.random.normal(key, shape=proj_shape)
+        A /= jnp.linalg.norm(A, ord=2, axis=0)
+
+        # i n t e g r a t i o n point s
+        t = jnp.linspace(-5, 5, 17)
+
+        # t h e o r e t i c a l CF f o r N(0, 1) and Gauss. window
+        exp_f = jnp.exp(-0.5 * t**2)
+
+        # emp i r i c a l CF
+        x_t = (x @ A).T[:, :, None] * t  # (M, N, T)
+        ecf = jnp.exp(1j * x_t).mean(1)
+
+        # weighted L2 distance
+        err = jnp.abs(ecf - exp_f)**2 * exp_f
+        
+        # numerical integration (trapezoidal rule)
+        loss = jnp.sum((err[:, 1:] + err[:, :-1]) / 2 * (t[1:] - t[:-1]), axis=-1).mean()
+        return loss
+
     @jax.jit
     def update_critic(transitions, training_state, key):
         critic_batch_size = args.batch_size
@@ -794,6 +868,7 @@ if __name__ == "__main__":
             transitions
         )
         def critic_loss(critic_params, transitions, key):
+            sigreg_key1, sigreg_key2 = jax.random.split(key)
             sa_encoder_params, g_encoder_params = critic_params["sa_encoder"], critic_params["g_encoder"]
             
             obs = transitions.observation[:, :args.obs_dim]
@@ -810,12 +885,20 @@ if __name__ == "__main__":
             logsumexp = jax.nn.logsumexp(logits + 1e-6, axis=1)
             critic_loss += args.logsumexp_penalty_coeff * jnp.mean(logsumexp**2)
 
+            if args.use_sigreg:
+                sigreg_loss_sa = SIGReg(sa_repr, sigreg_key1, args.sigreg_num_slices)
+                sigreg_loss_g = SIGReg(g_repr, sigreg_key2, args.sigreg_num_slices)
+                sigreg_loss = (sigreg_loss_sa + sigreg_loss_g) / 2
+                critic_loss += args.sigreg_coeff * sigreg_loss
+            else:
+                sigreg_loss = 0.0
+
             I, correct, logits_pos, logits_neg = jnp.zeros(1), jnp.zeros(1), jnp.zeros(1), jnp.zeros(1)
                 
 
-            return critic_loss, (logsumexp, I, correct, logits_pos, logits_neg)
+            return critic_loss, (logsumexp, I, correct, logits_pos, logits_neg, sigreg_loss)
             
-        (loss, (logsumexp, I, correct, logits_pos, logits_neg)), grad = jax.value_and_grad(critic_loss, has_aux=True)(training_state.critic_state.params, transitions, key)
+        (loss, (logsumexp, I, correct, logits_pos, logits_neg, sigreg_loss)), grad = jax.value_and_grad(critic_loss, has_aux=True)(training_state.critic_state.params, transitions, key)
         new_critic_state = training_state.critic_state.apply_gradients(grads=grad)
         training_state = training_state.replace(critic_state = new_critic_state)
 
@@ -826,6 +909,9 @@ if __name__ == "__main__":
             "logsumexp": logsumexp.mean(),
             "critic_loss": loss,
         }
+
+        if args.use_sigreg:
+            metrics["sigreg_loss"] = sigreg_loss
 
         return training_state, metrics
     
@@ -1038,8 +1124,10 @@ if __name__ == "__main__":
         
     # After training is complete, render the final policy
     if args.capture_vis:
-        def render_policy(training_state, save_path):
+        def render_policy(training_state, save_path, args):
             """Renders the policy and saves it as an HTML file."""
+            env = make_env(args.eval_env_id, args)
+
             @jax.jit
             def policy_step(env_state, actor_params):
                 means, _ = actor.apply(actor_params, env_state.obs)
@@ -1049,8 +1137,6 @@ if __name__ == "__main__":
             
             rollout_states = []
             for i in range(args.num_render):
-                env = make_env(args.eval_env_id)
-                
                 rng = jax.random.PRNGKey(seed=i+1)
                 env_state = jax.jit(env.reset)(rng)
                 
@@ -1067,7 +1153,7 @@ if __name__ == "__main__":
             
         print("Rendering final policy...", flush=True)
         try:
-            render_policy(training_state, save_path)
+            render_policy(training_state, save_path, args)
         except Exception as e:
             print(f"Error rendering final policy: {e}", flush=True)
         

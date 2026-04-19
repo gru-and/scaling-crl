@@ -1,14 +1,13 @@
 [project]
 name = "scaling-crl"
 version = "0.1.0"
-description = "1000 Layer Networks for Self-Supervised RL"
+description = "1000 Layer Networks for Self-Supervised RL: Scaling Depth Can Enable New Goal-Reaching Capabilities"
 readme = "README.md"
-# Blackwell support requires newer Python for the latest JAX/XLA wheels
-# RTX 4000 Blackwell requires CUDA 12.4+, cuDNN 9.1+, and compatible JAX
+# Nvidia Blackwell requires CUDA 12.4+, cuDNN 9.1+, compatible JAX and python
 requires-python = ">=3.11" 
 dependencies = [
     "numpy>=1.26.4",
-    "jax[cuda12]>=0.4.35",      # Modern JAX version for Blackwell support with CUDA 12
+    "jax[cuda12]>=0.4.35",     # Modern JAX version for Blackwell support with CUDA 12
     "flax>=0.8.0",             # Updated to match JAX version
     "tyro",
     "wandb==0.17.9",
@@ -21,7 +20,7 @@ dependencies = [
 
 [tool.uv]
 # Standardizes the JAX installation via the official CUDA index
-# For RTX 4000 Blackwell, ensure JAX_PLATFORM=cuda is set in your environment
+# For Blackwell, ensure JAX_PLATFORM=cuda is set in your environment
 index-url = "https://pypi.org/simple"
 
 [[tool.uv.index]]

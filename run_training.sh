@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# JAX/CUDA configuration for RTX 4000 Blackwell
+# JAX/CUDA configuration for Nvidia Blackwell
 export JAX_PLATFORMS=cuda
 export JAX_ENABLE_X64=false
 export JAX_DISABLE_JIT=false

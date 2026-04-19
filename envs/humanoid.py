@@ -30,8 +30,6 @@ class Humanoid(PipelineEnv):
       **kwargs,
   ):
     path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'assets', "humanoid.xml")
-    if isinstance(backend, list):
-      backend = backend[0]
     sys = mjcf.load(path)
 
     n_frames = 5

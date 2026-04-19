@@ -40,7 +40,23 @@ def warmup_jax():
         
         # Force synchronization
         result = jax.numpy.sum(x_jax).block_until_ready()
-        print(f"JAX/CUDA warmup complete (result: {result}).", flush=True)
+        
+        # More complex operations to ensure full warmup
+        # Matrix multiplication
+        a = jax.numpy.ones((50, 50), dtype=jax.numpy.float32)
+        b = jax.numpy.ones((50, 50), dtype=jax.numpy.float32)
+        c = jax.numpy.dot(a, b)
+        result2 = jax.numpy.sum(c).block_until_ready()
+        
+        # JIT compilation warmup
+        @jax.jit
+        def simple_jit_fn(x):
+            return x * 2 + 1
+        
+        test_input = jax.numpy.array([1.0, 2.0, 3.0])
+        result3 = simple_jit_fn(test_input).block_until_ready()
+        
+        print(f"JAX/CUDA warmup complete (results: {result}, {result2}, {result3}).", flush=True)
     except Exception as e:
         print(f"Warning: JAX warmup failed ({str(e)}), continuing anyway...", flush=True)
 

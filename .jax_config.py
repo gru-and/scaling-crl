@@ -1,6 +1,6 @@
 # .jax_config.py
 import jax
-jax.config.update('jax_disable_most_optimizations', True)
+jax.config.update('jax_disable_most_optimizations', False)
 jax.config.update('jax_enable_x64', False)
 jax.config.update('jax_disable_jit', False)
 jax.config.update('jax_enable_plugin_discovery', False)

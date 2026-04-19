@@ -69,9 +69,9 @@ class Args:
     torch_deterministic: bool = True
     cuda: bool = True
     track: bool = True
-    wandb_project_name: str = "rl_with_lejepa"
-    wandb_entity: str = 'k00627350-johannes-kepler-universit-t-linz'
-    wandb_mode: str = 'online'
+    wandb_project_name: str = "clean_JaxGCRL_test"
+    wandb_entity: str = 'wang-kevin3290-princeton-university'
+    wandb_mode: str = 'offline'
     wandb_dir: str = '.'
     wandb_group: str = '.'
     capture_vis: bool = True

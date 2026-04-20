@@ -4,18 +4,20 @@ version = "0.1.0"
 description = "1000 Layer Networks for Self-Supervised RL: Scaling Depth Can Enable New Goal-Reaching Capabilities"
 readme = "README.md"
 # Nvidia Blackwell requires CUDA 12.4+, cuDNN 9.1+, compatible JAX and python
-requires-python = ">=3.11" 
+requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26.4",
     "jax[cuda12]>=0.4.35",     # Modern JAX version for Blackwell support with CUDA 12
     "flax>=0.8.0",             # Updated to match JAX version
     "tyro",
-    "wandb==0.17.9",
-    "wandb-osh==1.2.2",
-    "brax>=0.10.1",
+    "gymnasium",
+    "wandb>=0.26.0",
+    "wandb-osh",
+    "brax>=0.12.1",
     "mediapy>=1.2.2",
     "scipy>=1.12.0",
-    "mujoco>=3.2.6"
+    "mujoco-mjx>=3.5.0",
+    "warp-lang"
 ]
 
 [tool.uv]

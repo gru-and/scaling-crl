@@ -7,6 +7,7 @@ requires-python = "==3.10.*"
 dependencies = [
     "numpy==1.26.4",
     "jax==0.4.23",
+    "jax[cuda12]",
     "jaxlib==0.4.23+cuda12.cudnn89; platform_system == 'Linux'",
     "nvidia-cudnn-cu11>=8.9,<9.0; platform_system == 'Linux'",
     "nvidia-cuda-cupti-cu12>=12.4; platform_system == 'Linux'",

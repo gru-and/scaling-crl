@@ -43,6 +43,7 @@ class TrajectoryUniformSamplingQueue():
 
         self._data_shape = (max_replay_size, num_envs, data_size)
         self._data_dtype = dummy_flatten.dtype
+        self._storage_dtype = jnp.float16 if self._data_dtype == jnp.float32 else self._data_dtype
         self._sample_batch_size = sample_batch_size
         self._size = 0
         self.num_envs = num_envs
@@ -50,7 +51,7 @@ class TrajectoryUniformSamplingQueue():
 
     def init(self, key):
         return ReplayBufferState(
-            data=jnp.zeros(self._data_shape, self._data_dtype),
+            data=jnp.zeros(self._data_shape, self._storage_dtype),
             sample_position=jnp.zeros((), jnp.int32),
             insert_position=jnp.zeros((), jnp.int32),
             key=key,
@@ -95,7 +96,7 @@ class TrajectoryUniformSamplingQueue():
                 f"doesn't match the expected value ({self._data_shape})"
             )
 
-        update = self._flatten_fn(samples) #Updates has shape (unroll_len, num_envs, self._data_shape[-1])
+        update = self._flatten_fn(samples).astype(self._storage_dtype) #Updates has shape (unroll_len, num_envs, self._data_shape[-1])
         data = buffer_state.data #shape = (max_replay_size, num_envs, data_size)
 
         # If needed, roll the buffer to make sure there's enough space to fit
@@ -129,7 +130,7 @@ class TrajectoryUniformSamplingQueue():
             )
         key, sample_key, shuffle_key = jax.random.split(buffer_state.key, 3)
         # Note: this is the number of envs to sample but it can be modified if there is OOM
-        shape = self.num_envs
+        shape = min(self.num_envs, self._sample_batch_size)
 
         # Sampling envs idxs
         envs_idxs = jax.random.choice(sample_key, jnp.arange(self.num_envs), shape=(shape,), replace=False)
@@ -166,7 +167,7 @@ class TrajectoryUniformSamplingQueue():
         flatten_crl_fn takes care of this
         '''
         print(f"buffer_state.data[:, envs_idxs, :].shape: {buffer_state.data[:, envs_idxs, :].shape}", flush=True)
-        batch = create_batch_vmaped(buffer_state.data[:, envs_idxs, :], matrix)
+        batch = create_batch_vmaped(buffer_state.data[:, envs_idxs, :], matrix).astype(self._data_dtype)
         transitions = self._unflatten_fn(batch)
         return buffer_state.replace(key=key), transitions
 
